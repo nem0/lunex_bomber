@@ -1,4 +1,4 @@
-project "myplugin"
+project "game"
 	libType()
 	files { 
 		"src/**.c",
@@ -6,9 +6,9 @@ project "myplugin"
 		"src/**.h",
 		"genie.lua"
 	}
-	defines { "BUILDING_MYPLUGIN" }
+	defines { "BUILDING_GAME" }
 	links { "engine" }
 	useLua()
 	defaultConfigurations()
 
-linkPlugin("myplugin")
+linkPlugin("game")
