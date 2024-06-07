@@ -32,6 +32,7 @@ struct Tile {
 	Type type;
 	EntityPtr entity = INVALID_ENTITY;
 	float countdown;
+	u32 flame_size;
 };
 
 struct GameSystem : ISystem {
@@ -96,6 +97,7 @@ struct GameModule : IModule {
 		EntityPtr e = m_engine.instantiatePrefab(m_world, *m_system.m_tile_prefabs[Tile::BOMB], {(float)ipos.x, 0, (float)ipos.y}, Quat::IDENTITY, {1, 1, 1}, entity_map);
 		t.entity = e;
 		t.countdown = 2;
+		t.flame_size = m_player.flame_size;
 		t.type = Tile::BOMB;
 	}
 
@@ -106,6 +108,37 @@ struct GameModule : IModule {
 			destroyEntity(*c);
 		}
 		m_world.destroyEntity(e);
+	}
+
+	void explode(u32 x, u32 y, u32 flame_size) {
+		const u32 w = lengthOf(m_board);
+		const u32 h = lengthOf(m_board[0]);
+
+		IVec2 center(x, y);
+
+		auto flame_line = [&](IVec2 dir){
+			for (u32 i = 1; i <= flame_size; ++i) {
+				const IVec2 p = center + dir * i;
+				if (p.x < 0 || p.y < 0) return;
+				if (p.x >= i32(w) || p.y >= i32(h)) return;
+
+				Tile& t = m_board[p.x][p.y];
+				switch (t.type) {
+					case Tile::BLOCK:
+						t.type = Tile::EMPTY;
+						destroyEntity(*t.entity);
+						t.entity = INVALID_ENTITY;
+						return;
+					default:
+						break;
+				}
+			}
+		};
+
+		flame_line({1, 0});
+		flame_line({-1, 0});
+		flame_line({0, 1});
+		flame_line({0, -1});
 	}
 
 	void update(float time_delta) {
@@ -140,6 +173,7 @@ struct GameModule : IModule {
 				if (t.type != Tile::BOMB) continue;
 				t.countdown -= time_delta;
 				if (t.countdown <= 0) {
+					explode(i, j, t.flame_size);
 					destroyEntity(*t.entity);
 					t.entity = INVALID_ENTITY;
 					t.type = Tile::EMPTY;
@@ -156,7 +190,7 @@ struct GameModule : IModule {
 				val -= tmp;
 				return tmp;
 			}
-		} step = {time_delta * 6};
+		} step = {time_delta * m_player.speed};
 		
 		auto hmove = [&](int delta){
 			IVec2 ipos = IVec2(m_player.pos + Vec2(0.5f, 0));
@@ -273,9 +307,11 @@ struct GameModule : IModule {
 		Vec2 pos = {1, 1};
 		EntityPtr entity;
 		u32 free_bombs = 2;
+		u32 flame_size = 1;
+		float speed = 4;
 	};
 
-	Tile m_board[20][15];
+	Tile m_board[15][11];
 	Player m_player;
 
 	bool m_left_input = false;
