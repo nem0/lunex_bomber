@@ -11,6 +11,7 @@
 #include "engine/resource_manager.h"
 #include "engine/world.h"
 #include "imgui/imgui.h"
+#include "renderer/particle_system.h"
 #include "renderer/render_module.h"
 
 
@@ -58,6 +59,7 @@ struct GameModule : IModule {
 		, m_system(system)
 		, m_world(world)
 		, m_allocator(allocator)
+		, m_explosions(m_allocator)
 	{}
 
 	const char* getName() const override { return "myplugin"; }
@@ -121,12 +123,14 @@ struct GameModule : IModule {
 						destroyEntity(*t.entity);
 						t.entity = INVALID_ENTITY;
 						const DVec3 pos { (float)p.x, 0, (float)p.y };
-						m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+						EntityPtr e = m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+						if (e) m_explosions.push(*e);
 						return;
 					}
 					default: {
 						const DVec3 pos{(float)p.x, 0, (float)p.y};
-						m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+						EntityPtr e = m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+						if (e) m_explosions.push(*e);
 						break;
 					}
 				}
@@ -134,7 +138,8 @@ struct GameModule : IModule {
 		};
 
 		const DVec3 pos{(float)center.x, 0, (float)center.y};
-		m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+		EntityPtr e = m_engine.instantiatePrefab(m_world, *m_explosion_prefab, pos, Quat::IDENTITY, { 1, 1, 1 }, entity_map);
+		if (e) m_explosions.push(*e);
 
 		flame_line({1, 0});
 		flame_line({-1, 0});
@@ -257,6 +262,20 @@ struct GameModule : IModule {
 			case Orientation::E: m_world.setRotation(*m_player.entity, Quat(Vec3(0, 1, 0), PI * 0.5f)); break;
 			case Orientation::S: m_world.setRotation(*m_player.entity, Quat(Vec3(0, 1, 0), 0)); break;
 			case Orientation::W: m_world.setRotation(*m_player.entity, Quat(Vec3(0, 1, 0), PI * 1.5f)); break;
+		}
+
+		// check if explosion finished
+		RenderModule* render_module = (RenderModule*)m_world.getModule("renderer");
+		for (i32 i = m_explosions.size() - 1; i >= 0; --i) {
+			EntityPtr ps_entity = m_world.getFirstChild(m_explosions[i]);
+			const ParticleSystem& ps = render_module->getParticleSystem(*ps_entity);
+			if (ps.m_total_time == 0) continue;
+			u32 sum = 0;
+			for (const ParticleSystem::Emitter& emitter : ps.getEmitters()) sum += emitter.particles_count;
+			if (sum == 0) {
+				destroyEntity(m_explosions[i]);
+				m_explosions.swapAndPop(i);
+			}
 		}
 	}
 
@@ -381,6 +400,7 @@ struct GameModule : IModule {
 	GameSystem& m_system;
 	World& m_world;
 	IAllocator& m_allocator;
+	Array<EntityRef> m_explosions;
 	PrefabResource* m_tile_prefabs[Tile::Type::COUNT] = {};
 	PrefabResource* m_player_prefab = nullptr;
 	PrefabResource* m_explosion_prefab = nullptr;
