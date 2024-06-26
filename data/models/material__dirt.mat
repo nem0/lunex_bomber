@@ -1,0 +1,5 @@
+shader "/pipelines/standard.shd"
+texture ""
+texture ""
+texture ""
+uniform("Material color", {0.766744,0.230998,0.093876,1})

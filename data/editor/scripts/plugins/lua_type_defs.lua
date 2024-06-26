@@ -128,7 +128,8 @@ declare LumixAPI: {
 	engine : any,
     logError : (string) -> (),
     logInfo : (string) -> (),
-	loadResource : (any, path:string, restype:string) -> any
+	loadResource : (any, path:string, restype:string) -> any,
+	writeFile : (string, string) -> boolean
 }
 
 declare class ComponentBase
@@ -361,7 +362,7 @@ export type InputEvent = ButtonInputEvent | AxisInputEvent
 
 local type_defs = refl()
 
-if false then
+if true then
     return {
         name = "Lua type defs",
         gui = function()
