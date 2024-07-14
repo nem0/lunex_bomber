@@ -1,4 +1,3 @@
-
 #include "core/crt.h"
 #include "core/math.h"
 #include "core/os.h"
@@ -36,6 +35,7 @@ struct Tile {
 	float countdown;
 	u32 flame_size;
 };
+
 
 struct GameSystem : ISystem {
 	GameSystem(Engine& engine) : m_engine(engine) {}
@@ -107,6 +107,12 @@ struct GameModule : IModule {
 		const u32 h = lengthOf(m_board[0]);
 
 		IVec2 center(x, y);
+		
+		Tile& t = m_board[x][y];
+		destroyEntity(*t.entity);
+		t.entity = INVALID_ENTITY;
+		t.type = Tile::EMPTY;
+		++m_player.free_bombs;
 
 		EntityMap entity_map(m_engine.getAllocator());
 		auto flame_line = [&](IVec2 dir){
@@ -117,7 +123,11 @@ struct GameModule : IModule {
 
 				Tile& t = m_board[p.x][p.y];
 				switch (t.type) {
-					case Tile::WALL: break;
+					case Tile::BOMB:
+						explode(p.x, p.y, t.flame_size);
+						break;
+					case Tile::WALL: 
+						return;
 					case Tile::BLOCK: {
 						t.type = Tile::EMPTY;
 						destroyEntity(*t.entity);
@@ -192,10 +202,6 @@ struct GameModule : IModule {
 				t.countdown -= time_delta;
 				if (t.countdown <= 0) {
 					explode(i, j, t.flame_size);
-					destroyEntity(*t.entity);
-					t.entity = INVALID_ENTITY;
-					t.type = Tile::EMPTY;
-					++m_player.free_bombs;
 				}
 			}
 		}
@@ -374,7 +380,7 @@ struct GameModule : IModule {
 		Vec2 pos = {1, 1};
 		EntityPtr entity;
 		u32 free_bombs = 2;
-		u32 flame_size = 1;
+		u32 flame_size = 4;
 		float speed = 4;
 		
 		Orientation orientation = Orientation::N;
