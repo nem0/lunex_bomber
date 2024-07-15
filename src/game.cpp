@@ -1,4 +1,5 @@
 #include "core/crt.h"
+#include "core/log.h"
 #include "core/math.h"
 #include "core/os.h"
 #include "core/path.h"
@@ -7,9 +8,13 @@
 #include "engine/input_system.h"
 #include "engine/plugin.h"
 #include "engine/prefab.h"
+#include "engine/reflection.h"
 #include "engine/resource_manager.h"
 #include "engine/world.h"
 #include "imgui/imgui.h"
+#include "gui/gui_module.h"
+#include "gui/gui_system.h"
+#include "../plugins/net/src/net.h"
 #include "renderer/particle_system.h"
 #include "renderer/render_module.h"
 
@@ -38,7 +43,7 @@ struct Tile {
 
 
 struct GameSystem : ISystem {
-	GameSystem(Engine& engine) : m_engine(engine) {}
+	GameSystem(Engine& engine);
 
 	const char* getName() const override { return "myplugin"; }
 	
@@ -167,9 +172,18 @@ struct GameModule : IModule {
 		}
 
 		if (m_game_state == GameState::LOADING) {
-			initGame();
-			m_game_state = GameState::RUNNING;
+			if (m_is_server) {
+				initGame();
+				m_game_state = GameState::RUNNING;
+			}
+			// client sets running state when it receives sync board message
 		}
+
+		if (m_is_server && m_to_client == NetSystem::INVALID_CONNECTION) return;
+		if (!m_is_server && m_to_server == NetSystem::INVALID_CONNECTION) return;
+
+		// client waits for sync board net msg
+		if (m_game_state != GameState::RUNNING) return;
 
 		// input events
 		Span<const InputSystem::Event> events = m_engine.getInputSystem().getEvents();
@@ -312,36 +326,104 @@ struct GameModule : IModule {
 		m_player_prefab = rm.load<PrefabResource>(Path("prefabs/player.fab"));
 		m_explosion_prefab = rm.load<PrefabResource>(Path("prefabs/explosion.fab"));
 		m_game_state = GameState::LOADING;
-	}
 		
+		GUISystem& system = (GUISystem&)m_world.getModule("gui")->getSystem();
+		system.enableCursor(true);
 
-	void initGame() {
+		NetSystem& net = getNetSystem();
+		net.onDataReceived().bind<&GameModule::dataReceived>(this);
+		net.onConnect().bind<&GameModule::clientConnected>(this);
+		net.onDisconnect().bind<&GameModule::clientDisconnected>(this);
+	}
+
+	void dataReceived(NetSystem::ConnectionHandle connection, Span<const u8> data) {
+		ASSERT(m_is_server && connection == m_to_client || !m_is_server && connection == m_to_server);
+
+		InputMemoryStream blob(data);
+		const NetMessageType msg_type = blob.read<NetMessageType>();
+		switch (msg_type) {
+			case NetMessageType::SYNC_BOARD:
+				m_game_state = GameState::RUNNING;
+				initGame((const Tile::Type*)blob.skip(1));
+				logInfo("Sync board message received");
+				break;
+			default:
+				logError("Unknown network message received");
+				break;
+		}
+	}
+
+	enum class NetMessageType : u8 {
+		SYNC_BOARD
+	};
+
+	void syncBoard() {
+		OutputMemoryStream blob(m_allocator);
+		blob.reserve(1 + lengthOf(m_board) * lengthOf(m_board[0]) * sizeof(Tile::Type));
+		blob.write(NetMessageType::SYNC_BOARD);
+		const u32 w = lengthOf(m_board);
+		const u32 h = lengthOf(m_board[0]);
+
+		for (u32 i = 0; i < w; ++i) {
+			for (u32 j = 0; j < h; ++j) {
+				blob.write(m_board[i][j].type);
+			}
+		}
+
+		getNetSystem().send(m_to_client, blob, true);
+	}
+
+	void clientConnected(NetSystem::ConnectionHandle connection) {
+		if (!m_is_server) return;
+		
+		ASSERT(m_to_client == NetSystem::INVALID_CONNECTION);
+		m_to_client = connection;
+		logInfo("Client connected");
+		syncBoard();
+	}
+
+	void clientDisconnected(NetSystem::ConnectionHandle connection) {
+		if (!m_is_server) return;
+		ASSERT(connection == m_to_client);
+		m_to_client = NetSystem::INVALID_CONNECTION;
+		logInfo("Client disconnected");
+	}
+
+	void initGame(const Tile::Type* init_data = nullptr) {
 		const u32 w = lengthOf(m_board);
 		const u32 h = lengthOf(m_board[0]);
 		RenderModule* render_module = (RenderModule*)m_world.getModule("renderer");
 		EntityMap entity_map(m_engine.getAllocator());
 
-		for (u32 i = 0; i < w; ++i) {
-			for (u32 j = 0; j < h; ++j) {
-				m_board[i][j].type = Tile::EMPTY;
-				if (i == 0 || j == 0 || i == w - 1 || j == h - 1) {
-					m_board[i][j].type = Tile::WALL;
-				}
-				else if (i % 2 == 0 && j % 2 == 0) {
-					m_board[i][j].type = Tile::WALL;
-				}
-				else {
-					if (rand() % 2) {
-						m_board[i][j].type = Tile::BLOCK;
-					}
+		if (init_data) {
+			for (u32 i = 0; i < w; ++i) {
+				for (u32 j = 0; j < h; ++j) {
+					m_board[i][j].type = init_data[j + i * h];
 				}
 			}
 		}
-		m_board[1][1].type = Tile::EMPTY;
-		m_board[2][1].type = Tile::EMPTY;
-		m_board[1][2].type = Tile::EMPTY;
+		else {
+			for (u32 i = 0; i < w; ++i) {
+				for (u32 j = 0; j < h; ++j) {
+					m_board[i][j].type = Tile::EMPTY;
+					if (i == 0 || j == 0 || i == w - 1 || j == h - 1) {
+						m_board[i][j].type = Tile::WALL;
+					}
+					else if (i % 2 == 0 && j % 2 == 0) {
+						m_board[i][j].type = Tile::WALL;
+					}
+					else {
+						if (rand() % 2) {
+							m_board[i][j].type = Tile::BLOCK;
+						}
+					}
+				}
+			}
+			m_board[1][1].type = Tile::EMPTY;
+			m_board[2][1].type = Tile::EMPTY;
+			m_board[1][2].type = Tile::EMPTY;
+		}
 
-		
 		for (u32 i = 0; i < w; ++i) {
 			for (u32 j = 0; j < h; ++j) {
 				const DVec3 pos{(float)i, 0, (float)j};
@@ -372,6 +454,47 @@ struct GameModule : IModule {
 			m_explosion_prefab->decRefCount();
 			m_explosion_prefab = nullptr;
 		}
+	}
+
+	NetSystem& getNetSystem() {
+		return *(NetSystem*)m_engine.getSystemManager().getSystem("network");
+	}
+
+	void connectClicked(EntityRef e) {
+		GUIModule* gui = (GUIModule*)m_world.getModule("gui");
+		EntityRef parent = *m_world.getParent(e);
+		gui->enableRect(parent, false);
+
+		NetSystem& net = getNetSystem();
+		m_to_server = net.connect("localhost", 12345);
+		if (m_to_server == NetSystem::INVALID_CONNECTION) {
+			logError("Failed to connect to server");
+		}
+		else {
+			logInfo("Connected to server");
+		}
+	}
+
+	void createServerClicked(EntityRef e) {
+		GUIModule* gui = (GUIModule*)m_world.getModule("gui");
+		EntityRef parent = *m_world.getParent(e);
+		gui->enableRect(parent, false);
+
+		NetSystem& net = getNetSystem();
+		if (net.createServer(12345, 1)) {
+			logInfo("Server creating at port 12345");
+			m_is_server = true;
+		}
+		else {
+			logError("Failed to create server");
+		}
+	}
+
+	static void reflect() {
+		LUMIX_MODULE(GameModule, "myplugin")
+			.LUMIX_FUNC(connectClicked)
+			.LUMIX_FUNC(createServerClicked)
+		;
 	}
 
 	enum class Orientation { N, E, S, W };
@@ -410,7 +533,18 @@ struct GameModule : IModule {
 	PrefabResource* m_tile_prefabs[Tile::Type::COUNT] = {};
 	PrefabResource* m_player_prefab = nullptr;
 	PrefabResource* m_explosion_prefab = nullptr;
+
+	NetSystem::ConnectionHandle m_to_server = NetSystem::INVALID_CONNECTION;
+	NetSystem::ConnectionHandle m_to_client = NetSystem::INVALID_CONNECTION;
+	bool m_is_server = false;
 };
+
+
+GameSystem::GameSystem(Engine& engine)
+	: m_engine(engine)
+{
+	GameModule::reflect();
+}
 
 
 void GameSystem::createModules(World& world) {
